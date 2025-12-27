@@ -28,28 +28,28 @@ set(SOURCES
 )
 
 # add gltf
-include(gltf/build_vars.cmake)
+# include(gltf/build_vars.cmake)
 
-# add 3D Tiles
-include(3DTiles/build_vars.cmake)
+# # add 3D Tiles
+# include(3DTiles/build_vars.cmake)
 
 # add freetype if available
 include(freetype/build_vars.cmake)
 
 # add assimp if available
-include(assimp/build_vars.cmake)
+# include(assimp/build_vars.cmake)
 
-# add optional ktx
-include(ktx/build_vars.cmake)
+# # add optional ktx
+# include(ktx/build_vars.cmake)
 
-# add optional GDAL component
-include(gdal/build_vars.cmake)
+# # add optional GDAL component
+# include(gdal/build_vars.cmake)
 
-# add optional CURL component
-include(curl/build_vars.cmake)
+# # add optional CURL component
+# include(curl/build_vars.cmake)
 
-# add optional OpenEXR component
-include(openexr/build_vars.cmake)
+# # add optional OpenEXR component
+# include(openexr/build_vars.cmake)
 
 # create the version header
 set(VSGXCHANGE_VERSION_HEADER "${VSGXCHANGE_BINARY_DIR}/include/vsgXchange/Version.h")

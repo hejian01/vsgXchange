@@ -7,6 +7,7 @@
 
 #include <vsgXchange/Version.h>
 #include <vsgXchange/all.h>
+#include <vsgXchange/freetype.h>
 
 namespace vsgconv
 {
@@ -272,6 +273,7 @@ void printHelp(std::ostream& out)
     out << "    --features <rw_name>  # list formats supported by the specified ReaderWriter\n";
     out << "    --nc --no-compile     # do not compile shaders to SPIRV\n";
     out << "    --rgb                 # leave RGB source data in its original form rather than converting to RGBA\n";
+    out << "    --chars <string>      # limit FreeType glyphs to this UTF-8 string\n";
     out << "    --ot <count>          # for loading vsg::OperationThreads with <count> threads.\n";
     out << "    -s                    # report load time stats\n";
     out << "    -v --version          # report version\n";
@@ -296,6 +298,9 @@ int main(int argc, char** argv)
     if (uint32_t numOperationThreads = 0; arguments.read("--ot", numOperationThreads)) options->operationThreads = vsg::OperationThreads::create(numOperationThreads);
 
     if (arguments.read("--rgb")) options->mapRGBtoRGBAHint = false;
+
+    auto freetype_chars = arguments.value(std::string(), "--chars");
+    if (!freetype_chars.empty()) options->setValue(vsgXchange::freetype::characters, freetype_chars);
 
     bool reportLoadStats = arguments.read("-s");
 

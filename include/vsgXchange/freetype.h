@@ -42,6 +42,7 @@ namespace vsgXchange
         // vsg::Options::setValue(str, value) supported options:
         static constexpr const char* texel_margin_ratio = "texel_margin_ratio";
         static constexpr const char* quad_margin_ratio = "quad_margin_ratio";
+        static constexpr const char* characters = "freetype.characters";
 
         bool readOptions(vsg::Options& options, vsg::CommandLine& arguments) const override;
 

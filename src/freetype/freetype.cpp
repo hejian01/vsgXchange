@@ -14,6 +14,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 #include <vsg/core/Exception.h>
 #include <vsg/io/Logger.h>
+#include <vsg/io/convert_utf.h>
 #include <vsg/nodes/Geometry.h>
 #include <vsg/nodes/Group.h>
 #include <vsg/state/ShaderStage.h>
@@ -588,32 +589,70 @@ vsg::ref_ptr<vsg::Object> freetype::Implementation::read(const vsg::Path& filena
 
     bool hasSpace = false;
     FT_ULong charcodeSpace = 32;
+    std::set<FT_ULong> requested_charcodes;
+    const auto requested_characters = vsg::value(std::string(), freetype::characters, options);
+    if (!requested_characters.empty())
+    {
+        std::wstring wchars;
+        vsg::convert_utf(requested_characters, wchars);
+        for (auto wc : wchars)
+        {
+            if (wc == 0) continue;
+            requested_charcodes.insert(static_cast<FT_ULong>(wc));
+        }
+    }
+    const bool use_character_subset = !requested_charcodes.empty();
 
     // collect all the sizes of the glyphs
     FT_ULong max_charcode = 0;
     {
-        FT_ULong charcode;
         FT_UInt glyph_index;
 
-        charcode = FT_Get_First_Char(face, &glyph_index);
-        while (glyph_index != 0)
+        if (use_character_subset)
         {
-            error = FT_Load_Glyph(face, glyph_index, load_flags);
-            if (error) continue;
+            for (auto charcode : requested_charcodes)
+            {
+                glyph_index = FT_Get_Char_Index(face, charcode);
+                if (glyph_index == 0) continue;
 
-            if (charcode > max_charcode) max_charcode = charcode;
+                error = FT_Load_Glyph(face, glyph_index, load_flags);
+                if (error) continue;
 
-            GlyphQuad quad{
-                charcode,
-                glyph_index,
-                static_cast<unsigned int>(ceil(float(face->glyph->metrics.width) * freetype_pixel_size_scale)),
-                static_cast<unsigned int>(ceil(float(face->glyph->metrics.height) * freetype_pixel_size_scale))};
+                if (charcode > max_charcode) max_charcode = charcode;
 
-            if (charcode == charcodeSpace) hasSpace = true;
+                GlyphQuad quad{
+                    charcode,
+                    glyph_index,
+                    static_cast<unsigned int>(ceil(float(face->glyph->metrics.width) * freetype_pixel_size_scale)),
+                    static_cast<unsigned int>(ceil(float(face->glyph->metrics.height) * freetype_pixel_size_scale))};
 
-            sortedGlyphQuads.insert(quad);
+                if (charcode == charcodeSpace) hasSpace = true;
 
-            charcode = FT_Get_Next_Char(face, charcode, &glyph_index);
+                sortedGlyphQuads.insert(quad);
+            }
+        }
+        else
+        {
+            FT_ULong charcode = FT_Get_First_Char(face, &glyph_index);
+            while (glyph_index != 0)
+            {
+                error = FT_Load_Glyph(face, glyph_index, load_flags);
+                if (error) continue;
+
+                if (charcode > max_charcode) max_charcode = charcode;
+
+                GlyphQuad quad{
+                    charcode,
+                    glyph_index,
+                    static_cast<unsigned int>(ceil(float(face->glyph->metrics.width) * freetype_pixel_size_scale)),
+                    static_cast<unsigned int>(ceil(float(face->glyph->metrics.height) * freetype_pixel_size_scale))};
+
+                if (charcode == charcodeSpace) hasSpace = true;
+
+                sortedGlyphQuads.insert(quad);
+
+                charcode = FT_Get_Next_Char(face, charcode, &glyph_index);
+            }
         }
     }
 
@@ -640,6 +679,12 @@ vsg::ref_ptr<vsg::Object> freetype::Implementation::read(const vsg::Path& filena
         }
     }
 
+    if (sortedGlyphQuads.empty())
+    {
+        vsg::warn("freetype::Implementation::read(..) No glyphs found.");
+        return {};
+    }
+
     double total_width = 0.0;
     double total_height = 0.0;
     for (auto& glyph : sortedGlyphQuads)
@@ -656,7 +701,7 @@ vsg::ref_ptr<vsg::Object> freetype::Implementation::read(const vsg::Path& filena
     vsg::debug("texel_margin = ", texel_margin);
     vsg::debug("quad_margin = ", quad_margin);
 
-    unsigned int provisional_cells_across = static_cast<unsigned int>(ceil(sqrt(double(face->num_glyphs))));
+    unsigned int provisional_cells_across = static_cast<unsigned int>(ceil(sqrt(double(sortedGlyphQuads.size()))));
     unsigned int provisional_width = provisional_cells_across * (average_width + texel_margin);
 
     //provisional_width = 1024;
