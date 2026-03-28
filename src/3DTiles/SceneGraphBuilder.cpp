@@ -37,10 +37,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <vsg/nodes/VertexIndexDraw.h>
 #include <vsg/state/ViewDependentState.h>
 #include <vsg/state/material.h>
-#include <vsg/vk/ResourceRequirements.h>
 #include <vsg/threading/OperationThreads.h>
 #include <vsg/utils/ComputeBounds.h>
 #include <vsg/utils/GraphicsPipelineConfigurator.h>
+#include <vsg/vk/ResourceRequirements.h>
 
 using namespace vsgXchange;
 
@@ -48,7 +48,7 @@ Tiles3D::SceneGraphBuilder::SceneGraphBuilder()
 {
 }
 
-vsg::dmat4 Tiles3D::SceneGraphBuilder::createMatrix(const std::vector<double>& m)
+vsg::dmat4 Tiles3D::SceneGraphBuilder::createMatrix(const std::vector<double>& m) const
 {
     if (m.size() == 16)
     {
@@ -63,7 +63,7 @@ vsg::dmat4 Tiles3D::SceneGraphBuilder::createMatrix(const std::vector<double>& m
     }
 }
 
-vsg::dsphere Tiles3D::SceneGraphBuilder::createBound(vsg::ref_ptr<BoundingVolume> boundingVolume)
+vsg::dsphere Tiles3D::SceneGraphBuilder::createBound(vsg::ref_ptr<BoundingVolume> boundingVolume) const
 {
     if (boundingVolume)
     {
@@ -112,15 +112,6 @@ vsg::ref_ptr<vsg::Node> Tiles3D::SceneGraphBuilder::readTileChildren(vsg::ref_pt
     auto group = vsg::Group::create();
 
     const std::string refine = tile->refine.empty() ? inherited_refine : tile->refine;
-
-    if (refine == "ADD")
-    {
-        if (auto local_subgraph = tile->getRefObject<vsg::Node>("local_subgraph"))
-        {
-            group->addChild(local_subgraph);
-        }
-    }
-
     if (operationThreads && tile->children.values.size() > 1)
     {
         struct ReadTileOperation : public vsg::Inherit<vsg::Operation, ReadTileOperation>
@@ -184,121 +175,226 @@ vsg::ref_ptr<vsg::Node> Tiles3D::SceneGraphBuilder::readTileChildren(vsg::ref_pt
         }
     }
 
-    vsg::ref_ptr<vsg::Node> root;
-    if (group->children.size() == 1) root = group->children[0];
-    else root = group;
+    if (group->children.empty()) return {};
+    else if (group->children.size() == 1) return group->children[0];
+    else return group;
+}
 
-    assignResourceHints(root);
+double Tiles3D::SceneGraphBuilder::computeScreenHeightRatio(const vsg::dsphere& bound, double geometricError) const
+{
+    if (geometricError == 0.0) return 0.0;
+    if (geometricError >= std::numeric_limits<double>::max()) return 0.001;
 
-    return root;
+    return (bound.radius / geometricError) * pixelErrorToScreenHeightRatio;
+}
+
+double Tiles3D::SceneGraphBuilder::computeScreenHeightRatio(const Tiles3D::Tile& tile) const
+{
+    return computeScreenHeightRatio(createBound(tile.boundingVolume), tile.geometricError);
+}
+
+bool Tiles3D::SceneGraphBuilder::isTripleNestedTile(vsg::ref_ptr<Tiles3D::Tile> tile) const
+{
+    if (tile->children.values.size()==1)
+    {
+        auto& child = tile->children.values[0];
+        if (child->children.values.size()==1)
+        {
+            auto& child_child = child->children.values[0];
+            return child_child->children.values.empty();
+        }
+    }
+    return false;
+}
+
+vsg::ref_ptr<vsg::Node> Tiles3D::SceneGraphBuilder::createTripleNestedTile(vsg::ref_ptr<Tiles3D::Tile> tile, uint32_t level)
+{
+    auto& child = tile->children.values[0];
+    auto& child_child = child->children.values[0];
+
+    double tile_screenRatio = computeScreenHeightRatio(*tile);
+    double child_screenRatio = computeScreenHeightRatio(*child);
+    vsg::dsphere bound = createBound(tile->boundingVolume);
+    bool usePagedLOD = level > preLoadLevel;
+
+    vsg::ref_ptr<vsg::Node> node;
+
+    if (usePagedLOD)
+    {
+        auto low_res_subgraph = vsg::read_cast<vsg::Node>(child->content->uri, options);
+
+        auto plod = vsg::PagedLOD::create();
+        plod->bound = bound;
+        plod->children[0] = vsg::PagedLOD::Child{child_screenRatio, {}};
+        plod->children[1] = vsg::PagedLOD::Child{tile_screenRatio, low_res_subgraph};
+        plod->filename = child_child->content->uri;
+        plod->options = options;
+
+        node = plod;
+    }
+    else
+    {
+        auto low_res_subgraph = vsg::read_cast<vsg::Node>(child->content->uri, options);
+        auto high_res_subgraph = vsg::read_cast<vsg::Node>(child_child->content->uri, options);
+
+        auto lod = vsg::LOD::create();
+        lod->bound = bound;
+        lod->addChild(vsg::LOD::Child{child_screenRatio, high_res_subgraph});
+        lod->addChild(vsg::LOD::Child{tile_screenRatio, low_res_subgraph});
+
+        node = lod;
+    }
+
+    if (!node) return {};
+
+    if (!tile->transform.values.empty())
+    {
+        auto transform = vsg::MatrixTransform::create(createMatrix(tile->transform.values));
+        transform->addChild(node);
+        return transform;
+    }
+    else
+    {
+        return node;
+    }
 }
 
 vsg::ref_ptr<vsg::Node> Tiles3D::SceneGraphBuilder::createTile(vsg::ref_ptr<Tiles3D::Tile> tile, uint32_t level, const std::string& inherited_refine)
 {
-#if 0
-    vsg::info("Tiles3D::createTile() {");
-    vsg::info("    boundingVolume = ", tile->boundingVolume);
-    vsg::info("    viewerRequestVolume = ", tile->viewerRequestVolume);
-    vsg::info("    tile->content = ", tile->geometricError);
-    vsg::info("    refine = ", tile->refine);
-    vsg::info("    transform = ", tile->transform.values);
-    vsg::info("    content = ", tile->content);
-#endif
-
-    vsg::dsphere bound = createBound(tile->boundingVolume);
-
-    vsg::ref_ptr<vsg::Node> local_subgraph;
-
-    if (tile->content && !tile->content->uri.empty())
+    if (isTripleNestedTile(tile))
     {
-        if (auto model = vsg::read_cast<vsg::Node>(tile->content->uri, options))
-        {
-            local_subgraph = model;
-        }
+        return createTripleNestedTile(tile, level);
     }
-
-    vsg::ref_ptr<vsg::MatrixTransform> vsg_transform;
-    if (!tile->transform.values.empty())
-    {
-        vsg_transform = vsg::MatrixTransform::create(createMatrix(tile->transform.values));
-    }
-
-    bool usePagedLOD = level > preLoadLevel;
 
     const std::string refine = tile->refine.empty() ? inherited_refine : tile->refine;
+    bool usePagedLOD = level > preLoadLevel;
+    bool addRefinement = refine == "ADD";
 
-    if (refine == "ADD" && local_subgraph)
+    vsg::ref_ptr<vsg::Node> local_subgraph;
+    if (tile->content && !tile->content->uri.empty())
     {
-        // need to pass on Tile local_subgraph to the SceneGraphBuilder::readTileChildren(..) so assign it to Tile as meta data
-        tile->setObject("local_subgraph", local_subgraph);
+        local_subgraph = vsg::read_cast<vsg::Node>(tile->content->uri, options);
     }
 
-    if (tile->children.values.empty())
+    double tile_screenRatio = 0.001;
+    double child_screenRatio = 0.125;
+    double add_screenRatio = 0.001;
+
+    vsg::ref_ptr<vsg::Node> node;
+    if (tile->children.values.empty()) // leaf Tile
     {
-        if (local_subgraph)
-        {
-            if (vsg_transform)
-            {
-                vsg_transform->addChild(local_subgraph);
-                return vsg_transform;
-            }
-            else
-            {
-                return local_subgraph;
-            }
-        }
-        return {};
+        node = local_subgraph;
     }
-    else if (usePagedLOD)
+    else if (usePagedLOD)  // Use PageLOD to load Tile children
     {
-        double minimumScreenHeightRatio = 0.5;
-        if (tile->geometricError > 0.0)
-        {
-            minimumScreenHeightRatio = (bound.radius / tile->geometricError) * pixelErrorToScreenHeightRatio;
-        }
-
-        auto plod = vsg::PagedLOD::create();
-        plod->bound = bound;
-        plod->children[0] = vsg::PagedLOD::Child{minimumScreenHeightRatio, {}};
-        plod->children[1] = vsg::PagedLOD::Child{0.0, local_subgraph};
-
-        plod->filename = "children.tiles";
-
         auto load_options = vsg::clone(options);
         load_options->setObject("tile", tile);
         load_options->setObject("builder", vsg::ref_ptr<SceneGraphBuilder>(this));
         load_options->setValue("level", level);
         load_options->setValue("refine", refine);
-        plod->options = load_options;
 
-        return plod;
-    }
-    else // use LOD
-    {
-        auto highres_subgraph = readTileChildren(tile, level, refine);
-
-        double minimumScreenHeightRatio = 0.5;
-        if (tile->geometricError > 0.0)
+        if (addRefinement && local_subgraph)
         {
-            minimumScreenHeightRatio = (bound.radius / tile->geometricError) * pixelErrorToScreenHeightRatio;
-        }
+            auto plod = vsg::PagedLOD::create();
+            plod->filename = "children.tiles";
+            plod->bound = createBound(tile->boundingVolume);
+            plod->children[0] = vsg::PagedLOD::Child{add_screenRatio, {}};
+            plod->options = load_options;
 
-        auto lod = vsg::LOD::create();
-        lod->bound = bound;
-        lod->addChild(vsg::LOD::Child{minimumScreenHeightRatio, highres_subgraph});
-        if (local_subgraph) lod->addChild(vsg::LOD::Child{0.0, local_subgraph});
-
-        if (vsg_transform)
-        {
-            vsg_transform->addChild(lod);
-            return vsg_transform;
+            auto group = vsg::Group::create();
+            group->addChild(local_subgraph);
+            group->addChild(plod);
+            node = group;
         }
         else
         {
-            return lod;
+            child_screenRatio = computeScreenHeightRatio(*tile);
+
+            auto plod = vsg::PagedLOD::create();
+            plod->filename = "children.tiles";
+            plod->bound = createBound(tile->boundingVolume);
+            plod->children[0] = vsg::PagedLOD::Child{child_screenRatio, {}};
+            plod->children[1] = vsg::PagedLOD::Child{tile_screenRatio, local_subgraph};
+            plod->options = load_options;
+
+            node = plod;
         }
     }
-    return {};
+    else // use LOD to directly reference children
+    {
+        if (addRefinement)
+        {
+            size_t childCount = (local_subgraph ? 1 : 0) + tile->children.values.size();
+
+            if (childCount > 1)
+            {
+                auto group = vsg::Group::create();
+                if (local_subgraph) group->addChild(local_subgraph);
+
+                for(auto& child : tile->children.values)
+                {
+                    if (auto child_node = createTile(child, level+1, refine))
+                    {
+                        auto lod = vsg::LOD::create();
+                        lod->bound = createBound(child->boundingVolume);
+                        lod->addChild(vsg::LOD::Child{add_screenRatio, child_node});
+
+                        group->addChild(lod);
+                    }
+                }
+
+                node = group;
+            }
+            else if (!tile->children.values.empty())  // local_subgraph must be null
+            {
+                if (auto highres_subgraph = readTileChildren(tile, level, refine))
+                {
+                    auto lod = vsg::LOD::create();
+                    lod->bound = createBound(tile->boundingVolume);
+                    lod->addChild(vsg::LOD::Child{child_screenRatio, highres_subgraph});
+
+                    // return if nothing assigned to LOD.
+                    if (lod->children.empty()) return {};
+
+                    node = lod;
+                }
+            }
+            else
+            {
+                node = local_subgraph;
+            }
+        }
+        else
+        {
+            child_screenRatio = computeScreenHeightRatio(*tile);
+
+            auto highres_subgraph = readTileChildren(tile, level, refine);
+
+            auto lod = vsg::LOD::create();
+            lod->bound = createBound(tile->boundingVolume);
+            if (highres_subgraph) lod->addChild(vsg::LOD::Child{child_screenRatio, highres_subgraph});
+            if (local_subgraph) lod->addChild(vsg::LOD::Child{tile_screenRatio, local_subgraph});
+
+            // return if nothing assigned to LOD.
+            if (lod->children.empty()) return {};
+
+            node = lod;
+        }
+
+    }
+
+    if (!node) return {};
+
+    if (!tile->transform.values.empty())
+    {
+        auto transform = vsg::MatrixTransform::create(createMatrix(tile->transform.values));
+        transform->addChild(node);
+        return transform;
+    }
+    else
+    {
+        return node;
+    }
 }
 
 vsg::ref_ptr<vsg::Object> Tiles3D::SceneGraphBuilder::createSceneGraph(vsg::ref_ptr<Tiles3D::Tileset> tileset, vsg::ref_ptr<const vsg::Options> in_options)
