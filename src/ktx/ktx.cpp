@@ -516,7 +516,7 @@ vsg::ref_ptr<vsg::Object> ktx::Implementation::read(const vsg::Path& filename, v
             ktxTexture2* texture = nullptr;
             result = ktxTexture2_CreateFromStdioStream(file, KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &texture);
             if (result == KTX_SUCCESS) data = readKtx2(texture, filename);
-            if (texture) ktxTexture2_Destroy(texture);
+            if (texture) ktxTexture_Destroy(ktxTexture(texture));
         }
     }
     catch (const vsg::Exception& ve)
@@ -564,7 +564,7 @@ vsg::ref_ptr<vsg::Object> ktx::Implementation::read(std::istream& fin, vsg::ref_
             std::cout << "ktx::read(std::istream&) failed : " << ve.message << std::endl;
         }
 
-        ktxTexture2_Destroy(texture);
+        ktxTexture_Destroy(ktxTexture(texture));
 
         return data;
     }
@@ -589,7 +589,7 @@ vsg::ref_ptr<vsg::Object> ktx::Implementation::read(const uint8_t* ptr, size_t s
             std::cout << "ktx::read(uint_8_t*, size_t) failed : " << ve.message << std::endl;
         }
 
-        ktxTexture2_Destroy(texture);
+        ktxTexture_Destroy(ktxTexture(texture));
 
         return data;
     }
